@@ -1,0 +1,25 @@
+# OpenAI API for LM Studio access
+openai
+
+scipy
+audioop-lts
+sounddevice
+pydub
+
+# pytts
+pyttsx3
+
+# PiperTTS
+piper-tts
+onnxruntime-gpu
+# run manually: python -m piper.download_voices en_US-kristin-medium
+
+# Speech-to-Text (STT)
+faster-whisper
+
+numpy>=1.24.0
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch>=2.0.0
+accelerate
+transformers>=4.30.0
+tokenizers>=0.13.0
