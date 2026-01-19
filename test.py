@@ -1,72 +1,35 @@
 from stt.whisper_client import SttClient
 from tts.pipertts_client import TtsClient
 
-from lmstudio.client import LlmClient
+from llm.client import LlmClient
 
 stt_client = SttClient()
 llm_client = LlmClient()
 tts_client = TtsClient()
 
-llm_chat = llm_client.new_chat()
+response = llm_chat = llm_client.prompt(
+    [
+        { "role": "system", "content": 
+        "You are a helpful assistant. " + 
+        "Keep your answers very short and concise, ideally not more that one sentence. " +
+        "Before going into details, ask the user if they want to know more. " + 
+        "Also avoid any separators, like --- etc."
+        "Do not use any emojis. " + 
+        "Skip any introductions or explanations."
+        },
+        { "role": "user", "content": "What is Python?" },
+        { "role": "assistant", "content": "Python is an high-level" },
+        { "role": "user", "content": "Wait a moment" },
+        { "role": "assistant", "content": "Sure thing! How can I assist you further with this topic in mind?" },
+        { "role": "user", "content": "Please continue, but keep it short" },
+        { "role": "assistant", "content": "Certainly. Python supports multiple programming paradigms including procedural, object-oriented and functional styles. It's widely used for web development, data analysis, artificial intelligence, scientific computing etc. " },
+        { "role": "user", "content": "Give me a sec" },
+        { "role": "assistant", "content": "Of course! Feel free to ask any questions or request more information on the topic whenever you're ready. I'm here to help!" },
+        { "role": "user", "content": "Thanks. Please continue" },
+    ]
+)
 
-try:
-    
-    while True:
-        # Listen for user's spoken prompt
-        print("Listening ...", flush=True)
-
-        while True:
-            [prompt, confidence_info] = stt_client.listen(1.0)
-            # Cntinue if no speech detected with at least one letter
-            if not prompt or not any(c.isalpha() for c in prompt):
-                continue
-            print(f"Heard: {prompt}\n(confidence: {confidence_info}", flush=True)
-            # Not confident enough?
-            if confidence_info["score"] < 0.6:
-                tts_client.speak("Pardon?")
-                continue
-            break
-
-        # Send prompt to LLM
-        chat_response = "Mkay" #llm_chat.prompt(prompt)
-
-        # Process and speak the response stream
-        if chat_response:
-            buffer = ""
-            offset = 0
-
-            for fragment in chat_response:
-                if fragment:
-                    # Add the new fragment to the buffer
-                    buffer += fragment
-                    
-                    # Check if there are complete sentences (ending with ".", "!", "?") or lines (ending with "\n") after the offset
-                    # Find the last sentence/line ending character in the buffer after the offset
-                    sentence_endings = [".", "!", "?", "\n"]
-                    last_sentence_end_idx = -1
-                    for i in range(offset, len(buffer)):
-                        if buffer[i] in sentence_endings:
-                            last_sentence_end_idx = i
-                    
-                    # If we found a sentence/line ending, extract and print the sentence/line
-                    if last_sentence_end_idx >= offset:
-                        # Extract sentence/line from offset to last_sentence_end_idx (inclusive)
-                        sentence_to_print = buffer[offset:last_sentence_end_idx + 1]
-                        print(sentence_to_print, end="", flush=True)
-                        tts_client.speak(sentence_to_print)
-                        # Update offset to after the last sentence/line ending
-                        offset = last_sentence_end_idx + 1
-
-                        if (sentence_to_print.lower().endswith("goodbye.")):
-                            exit()
-
-            # Print any remaining content in the buffer after the stream ends
-            if offset < len(buffer):
-                remaining = buffer[offset:]
-                print(remaining, end="", flush=True)
-                tts_client.speak(remaining)
-
-            print("\n")  # Final newline and spacing
-
-except KeyboardInterrupt:
-    print("\n\nExiting...", flush=True)
+for chunk in response:
+    if (chunk.choices[0].delta):
+        if (chunk.choices[0].delta.content):
+            print(chunk.choices[0].delta.content, end="", flush=True)

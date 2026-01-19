@@ -1,10 +1,10 @@
 import os
-from typing import Any
+from typing import Any, Optional
 import queue
 import time
+import threading
 
 import numpy as np
-import sounddevice as sd
 import torch
 from faster_whisper import WhisperModel
 
@@ -15,33 +15,74 @@ TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION", "base")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "torch.int8"
 
-# Audio recording settings
-SAMPLE_RATE = 16000
-CHUNK_DURATION_MS = 100  # Process audio in 100ms chunks
-CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
-SILENCE_THRESHOLD = 0.002  # RMS threshold for silence detection
-SILENCE_DURATION_SEC = 2.0  # Pause duration to trigger transcription
+# Silence detection settings
+SILENCE_THRESHOLD = 0.003  # RMS threshold for silence detection
+SILENCE_DURATION_SEC = 1.5  # Pause duration to trigger transcription
 
 
-class SttClient:
-    def __init__(self) -> None:
+class SttTranscriber:
+    """
+    Transcribes audio to text.
+    
+    Can be used in two modes:
+    1. Queue-based: Consumes audio chunks from mic_audio_q and produces text events to text_in_q (legacy)
+    2. Direct: Use transcribe() for blocking transcription
+    """
+    def __init__(
+        self, 
+        mic_audio_q: Optional[queue.Queue] = None, 
+        text_in_q: Optional[queue.Queue] = None, 
+        silence_duration_sec: float = SILENCE_DURATION_SEC
+    ):
+        self.mic_audio_q = mic_audio_q
+        self.text_in_q = text_in_q
         self.asr = WhisperModel(
             TRANSCRIPTION_MODEL_NAME,
             device=TRANSCRIPTION_DEVICE,
             compute_type=TRANSCRIPTION_DATATYPE
         )
-        self.audio_queue = queue.Queue()
-        self.is_recording = False
+        self.is_running = False
         self.audio_buffer = []
-
-    def _audio_callback(self, indata, frames, time_info, status):  # pyright: ignore[reportUnusedParameter]
-        """Callback function for sounddevice to capture audio chunks."""
-        if status:
-            print(f"Audio status: {status}", flush=True)
-        # Convert to float32 and calculate RMS for silence detection
-        audio_chunk = indata[:, 0].astype(np.float32)
-        rms = np.sqrt(np.mean(audio_chunk ** 2))
-        self.audio_queue.put((audio_chunk, rms))
+        self.silence_start_time: Optional[float] = None
+        self.silence_duration_sec = silence_duration_sec
+        self._transcriber_thread: Optional[threading.Thread] = None
+        self._audio_recorder: Optional[Any] = None
+    
+    def transcribe(self, audio_recorder) -> tuple[str, dict]:
+        """
+        Blocking method to listen and transcribe audio until silence.
+        
+        Args:
+            audio_recorder: AudioRecorder instance to use for recording
+        
+        Returns:
+            Tuple of (transcribed_text: str, confidence_info: dict)
+        """
+        # Record audio until silence
+        audio_chunks = audio_recorder.record_until_silence(self.silence_duration_sec)
+        
+        if not audio_chunks:
+            return "", {"score": 0.0, "reason": "no_audio"}
+        
+        # Concatenate audio chunks
+        audio_data = np.concatenate(audio_chunks)
+        
+        # Transcribe using faster-whisper
+        segments, _ = self.asr.transcribe(
+            audio_data,
+            language="en",
+            beam_size=5
+        )
+        
+        segments = list(segments)
+        transcribed_text = ""
+        for segment in segments:
+            transcribed_text += segment.text
+        
+        confidence_info = self._utterance_confidence(segments)
+        transcribed_text = transcribed_text.strip()
+        
+        return transcribed_text, confidence_info
 
     def _clamp(self, x: float, lo: float = 0.0, hi: float = 1.0) -> float:
         return max(lo, min(hi, x))
@@ -121,79 +162,81 @@ class SttClient:
             "comp_penalty": comp_penalty,
         }
 
-
-    def listen(self, silence_duration_sec: float = SILENCE_DURATION_SEC) -> tuple[str, dict[str, Any]]:
-        """
-        Listen for speech from the microphone and transcribe when there's a pause
-        of more than 'silence_duration_sec' seconds. Returns the transcribed text.
-        """
+    def start(self):
+        """Start transcribing in a background thread."""
+        if self.is_running:
+            return
         
-        self.is_recording = True
+        self.is_running = True
         self.audio_buffer = []
-        silence_start_time = None
+        self.silence_start_time = None
         
-        try:
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                blocksize=CHUNK_SIZE,
-                callback=self._audio_callback,
-                dtype=np.float32
-            ):
-                while self.is_recording:
-                    try:
-                        # Get audio chunk from queue (with timeout to allow checking is_recording)
-                        audio_chunk, rms = self.audio_queue.get(timeout=0.1)
-                        
-                        current_time = time.time()
-                        
-                        # Check if audio level is above silence threshold
-                        if rms > SILENCE_THRESHOLD:
-                            # Speech detected
-                            self.audio_buffer.append(audio_chunk)
-                            silence_start_time = None
-                        else:
-                            # Silence detected
-                            if silence_start_time is None:
-                                silence_start_time = current_time
-                            
-                            # Check if silence has lasted long enough
-                            silence_duration = current_time - silence_start_time
-                            if silence_duration >= silence_duration_sec and len(self.audio_buffer) > 0:
-                                # Pause detected, transcribe the buffered audio
-                                self.is_recording = False
-                                break
-                            
-                            # Still add silence chunks to buffer (in case user continues speaking)
-                            self.audio_buffer.append(audio_chunk)
+        def _listen_to_audio_loop():
+            while self.is_running:
+                try:
+                    # Get audio chunk from queue (with timeout to allow checking is_running)
+                    audio_chunk, rms = self.mic_audio_q.get(timeout=0.1)
                     
-                    except queue.Empty:
-                        # Timeout - continue loop to check is_recording
-                        continue
+                    current_time = time.time()
+                    
+                    # Check if audio level is above silence threshold
+                    if rms > SILENCE_THRESHOLD:
+                        # Speech detected
+                        self.audio_buffer.append(audio_chunk)
+                        self.silence_start_time = None
+                    else:
+                        # Silence detected
+                        if self.silence_start_time is None:
+                            self.silence_start_time = current_time
+                        
+                        # Check if silence has lasted long enough
+                        if self.silence_start_time is not None:
+                            silence_duration = current_time - self.silence_start_time
+                            if silence_duration >= self.silence_duration_sec and len(self.audio_buffer) > 0:
+                                # Pause detected, transcribe the buffered audio
+                                audio_data = np.concatenate(self.audio_buffer)
+                                
+                                # Transcribe using faster-whisper
+                                segments, _ = self.asr.transcribe(
+                                    audio_data,
+                                    language="en",
+                                    beam_size=5
+                                )
+                                
+                                segments = list(segments)
+                                transcribed_text = ""
+                                for segment in segments:
+                                    transcribed_text += segment.text
+                                
+                                confidence_info = self._utterance_confidence(segments)
+                                transcribed_text = transcribed_text.strip()
+                                
+                                # Only produce text event if we have valid text
+                                if transcribed_text and any(c.isalpha() for c in transcribed_text):
+                                    self.text_in_q.put({
+                                        "text": transcribed_text,
+                                        "confidence_info": confidence_info,
+                                        "source": "transcriber"
+                                    })
+                                
+                                # Reset buffer for next utterance
+                                self.audio_buffer = []
+                                self.silence_start_time = None
+                        
+                        # Still add silence chunks to buffer (in case user continues speaking)
+                        self.audio_buffer.append(audio_chunk)
+                
+                except queue.Empty:
+                    # Timeout - continue loop to check is_running
+                    continue
+                except Exception as e:
+                    print(f"Error in transcriber: {e}", flush=True)
         
-        except KeyboardInterrupt:
-            print("\nRecording interrupted", flush=True)
-            self.is_recording = False
-        
-        # Transcribe the buffered audio
-        if len(self.audio_buffer) > 0:
-            # Concatenate all audio chunks
-            audio_data = np.concatenate(self.audio_buffer)
-            
-            # Transcribe using faster-whisper
-            segments, _ = self.asr.transcribe(
-                audio_data,
-                language="en",
-                beam_size=5
-            )
-            
-            # Collect all transcribed text
-
-            segments = list(segments)
-            transcribed_text = ""
-            for segment in segments:
-                transcribed_text += segment.text
-
-        confidence_info = self._utterance_confidence(segments)
-
-        return [transcribed_text.strip(), confidence_info]
+        self._transcriber_thread = threading.Thread(target=_listen_to_audio_loop, daemon=True)
+        self._transcriber_thread.start()
+    
+    def stop(self):
+        """Stop transcribing."""
+        self.is_running = False
+        if self._transcriber_thread and self._transcriber_thread.is_alive():
+            self._transcriber_thread.join(timeout=2.0)
