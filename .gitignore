@@ -2,3 +2,5 @@
 /.vscode
 __pycache__
 /models
+/speakers/pretrained_models
+/audio/resources/assistant_example_16k_mono.wav

@@ -28,3 +28,6 @@ torchaudio>=2.0.0,<2.9.0
 accelerate
 transformers>=4.30.0
 tokenizers>=0.13.0
+
+# visualizations
+matplotlib
