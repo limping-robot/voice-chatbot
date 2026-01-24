@@ -1,6 +1,6 @@
 from openai import OpenAI, ChatCompletion
 LM_STUDIO_URL = "http://localhost:1234/v1"
-MODEL_IDENTIFIER = "phi-4-mini-instruct"
+MODEL_IDENTIFIER = "qwen3-4b-instruct-2507-gemini-3-pro-preview-distill"
 
 class LlmChat:
     def __init__(self):

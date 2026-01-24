@@ -7,6 +7,8 @@ from audio.audio_recorder import AudioRecorder
 from audio.audio_player import AudioPlayer
 from llm.client import LlmClient
 
+from audio import wav_player
+
 # Configure logging to stdout
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Create pipeline components
 audio_recorder = AudioRecorder()
 audio_player = AudioPlayer()
-transcriber = SttTranscriber(silence_duration_sec=1.0)
+transcriber = SttTranscriber(silence_duration_sec=1.5)
 tts_synthesizer = TtsSynthesizer()
 
 # LLM client
@@ -54,31 +56,36 @@ def main_loop():
     
     while True:
         try:
+            # Play listening start sound
+            wav_player.play_listening_sound(audio_player)
+            
             # Listen and transcribe (blocking until silence)
             logger.info("Listening for speech...")
+
             transcribed_text, confidence_info = transcriber.transcribe(audio_recorder)
             
             # Log transcription result
             logger.info(f"Transcribed: text='{transcribed_text}', confidence_info={confidence_info}")
             
             # Continue if no speech detected with at least one letter
-            if not transcribed_text or not any(c.isalpha() for c in transcribed_text):
+            if not transcribed_text or not any(c.isalnum() for c in transcribed_text):
                 continue
 
             # Did we even hear speech?
-            if confidence_info.get("no_speech_prob", 0) > 0.7:
+            if confidence_info.get("no_speech_prob", 0) > 0.5:
+                wav_player.play_transcribed_sound(audio_player)
+                tts_synthesizer.synthesize_and_play("Pardon?", audio_player)
                 continue
 
             # Are we confident about the transcription?
-            if confidence_info.get("score", 0) < 0.3:
-                # Confidence so low, we ignore the transcription
-                continue
-            
-            # Not confident enough?
-            if confidence_info.get("score", 0) < 0.6:
+            if confidence_info.get("score", 0) < 0.5 and confidence_info.get("logprob_score", 0) < 0.7:
                 # Output "Pardon?" to let user confirm their request
-                tts_synthesizer.synthesize_and_play("Pardon?", audio_player)
+                wav_player.play_transcribed_sound(audio_player)
+                tts_synthesizer.synthesize_and_play("Could you please repeat?", audio_player)
                 continue
+
+            # Play transcription completion sound
+            wav_player.play_prompting_sound(audio_player)
             
             # Send prompt to LLM
             logger.info(f"LLM interaction - Sending prompt: '{transcribed_text}'")

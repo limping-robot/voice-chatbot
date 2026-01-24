@@ -37,6 +37,8 @@ class AudioPlayer:
         # Play audio and wait for completion
         sd.play(audio_data, sample_rate)
         sd.wait()
+        # add a bit of a pause
+        time.sleep(0.2)
 
     def start(self):
         """Start playing audio in a background thread."""

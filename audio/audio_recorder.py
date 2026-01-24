@@ -12,7 +12,7 @@ CHUNK_DURATION_MS = 100  # Process audio in 100ms chunks
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 
 # Silence detection settings
-SILENCE_THRESHOLD = 0.003  # RMS threshold for silence detection
+SILENCE_THRESHOLD = 0.005  # RMS threshold for silence detection
 
 class AudioRecorder:
     """
@@ -75,7 +75,9 @@ class AudioRecorder:
             threading.Event().wait(0.1)
         
         audio_buffer = []
-        silence_start_time: Optional[float] = None
+        initial_silence_start_time: Optional[float] = None  # When silence first detected
+        silence_start_time: Optional[float] = None  # When we've confirmed 100ms of silence
+        SILENCE_CONFIRMATION_MS = 0.1  # 100ms
         
         while True:
             with self._direct_recording_lock:
@@ -86,19 +88,32 @@ class AudioRecorder:
                     current_time = time.time()
                     
                     if rms > SILENCE_THRESHOLD:
-                        # Speech detected
+                        # audio activity detected - reset all silence tracking
                         audio_buffer.append(chunk)
+                        initial_silence_start_time = None
                         silence_start_time = None
                     else:
                         # Silence detected
-                        if silence_start_time is None:
-                            silence_start_time = current_time
+                        if initial_silence_start_time is None:
+                            # First time we detect silence
+                            initial_silence_start_time = current_time
                         
-                        if silence_start_time is not None:
-                            silence_duration = current_time - silence_start_time
-                            if silence_duration >= silence_duration_sec and len(audio_buffer) > 0:
-                                # Silence long enough, return recorded audio
-                                break
+                        # Check if we've had continuous silence for at least 100ms
+                        if initial_silence_start_time is not None:
+                            initial_silence_duration = current_time - initial_silence_start_time
+                            
+                            if initial_silence_duration >= SILENCE_CONFIRMATION_MS:
+                                # We've confirmed at least 100ms of silence
+                                if silence_start_time is None:
+                                    # Start the actual silence timer now (from when we confirmed)
+                                    silence_start_time = current_time
+                                
+                                # Check if we've had enough silence after confirmation
+                                if silence_start_time is not None:
+                                    silence_duration = current_time - silence_start_time
+                                    if silence_duration >= silence_duration_sec and len(audio_buffer) > 0:
+                                        # Silence long enough, return recorded audio
+                                        break
                         
                         # Still add silence chunks (in case user continues speaking)
                         audio_buffer.append(chunk)

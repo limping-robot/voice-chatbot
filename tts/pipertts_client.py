@@ -28,9 +28,9 @@ class TtsSynthesizer:
         )
         self.syn_config = SynthesisConfig(
             volume=1.0,
-            length_scale=0.9,
-            noise_scale=1.0,  # more audio variation
-            noise_w_scale=1.0,  # more speaking variation
+            length_scale=1.0,
+            noise_scale=0.7,  # audio variation
+            noise_w_scale=0.8,  # speaking variation
             normalize_audio=False,  # use raw audio from voice
         )
         self.is_running = False

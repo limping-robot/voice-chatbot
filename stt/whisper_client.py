@@ -58,28 +58,33 @@ class SttTranscriber:
         Returns:
             Tuple of (transcribed_text: str, confidence_info: dict)
         """
-        # Record audio until silence
-        audio_chunks = audio_recorder.record_until_silence(self.silence_duration_sec)
+        while True:
+            # Record audio until silence
+            audio_chunks = audio_recorder.record_until_silence(self.silence_duration_sec)
+            
+            if not audio_chunks:
+                return "", {"score": 0.0, "reason": "no_audio"}
+            
+            # Concatenate audio chunks
+            audio_data = np.concatenate(audio_chunks)
+            
+            # Transcribe using faster-whisper
+            segments, _ = self.asr.transcribe(
+                audio_data,
+                language="en",
+                beam_size=5
+            )
+            
+            segments = list(segments)
+            if segments:
+                break
         
-        if not audio_chunks:
-            return "", {"score": 0.0, "reason": "no_audio"}
-        
-        # Concatenate audio chunks
-        audio_data = np.concatenate(audio_chunks)
-        
-        # Transcribe using faster-whisper
-        segments, _ = self.asr.transcribe(
-            audio_data,
-            language="en",
-            beam_size=5
-        )
-        
-        segments = list(segments)
         transcribed_text = ""
         for segment in segments:
             transcribed_text += segment.text
         
         confidence_info = self._utterance_confidence(segments)
+
         transcribed_text = transcribed_text.strip()
         
         return transcribed_text, confidence_info
