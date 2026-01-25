@@ -1,13 +1,23 @@
-import re
+"""
+Main entry point for voice chatbot with barge-in support.
+
+Uses orchestrator-based architecture with:
+- Full-duplex audio I/O
+- Continuous microphone processing (AEC + VAD)
+- Interruptible TTS playback
+- Barge-in detection
+"""
+
 import logging
 import sys
+
 from stt.whisper_client import SttTranscriber
 from tts.pipertts_client import TtsSynthesizer
-from audio.audio_recorder import AudioRecorder
 from audio.audio_player import AudioPlayer
+from audio.full_duplex_io import FullDuplexIO
+from audio.mic_processor import MicProcessor
 from llm.client import LlmClient
-
-from audio import wav_player
+from core.orchestrator import Orchestrator
 
 # Configure logging to stdout
 logging.basicConfig(
@@ -18,140 +28,85 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create pipeline components
-audio_recorder = AudioRecorder()
-audio_player = AudioPlayer()
-transcriber = SttTranscriber(silence_duration_sec=1.5)
-tts_synthesizer = TtsSynthesizer()
 
-# LLM client
-llm_client = LlmClient()
-llm_chat = llm_client.new_chat()
-
-# Precompiled regex pattern for sentence endings
-# Matches: period, exclamation, question mark, or newline followed by whitespace or end of string
-SENTENCE_ENDING_PATTERN = re.compile(r'[.!?\n](?!\S)')
-
-def find_first_sentence_ending(buffer: str, offset: int) -> int:
-    """
-    Find the index of the first sentence ending in the buffer after the given offset.
+def main():
+    """Main entry point."""
+    import queue
     
-    Args:
-        buffer: The text buffer to search in
-        offset: The position to start searching from
+    logger.info("Starting voice chatbot with barge-in support...")
     
-    Returns:
-        The index of the last character of the first sentence ending found, or -1 if none found
-    """
-    match = SENTENCE_ENDING_PATTERN.search(buffer[offset:])
-    if match:
-        # match.end() gives the position after the match
-        # We need the position of the last character of the match
-        return offset + match.end() - 1
+    # Create full-duplex audio I/O
+    full_duplex_io = FullDuplexIO(
+        sample_rate=16000,
+        channels=1,
+        frame_size=160  # 10ms at 16kHz
+    )
     
-    return -1
-
-def main_loop():
-    """Main loop: listen, transcribe, send to LLM, and play response."""
+    # Create audio player (uses frame queue from full_duplex_io)
+    audio_player = AudioPlayer(
+        frame_queue=full_duplex_io.speaker_frame_queue
+    )
     
-    while True:
-        try:
-            # Play listening start sound
-            wav_player.play_listening_sound(audio_player)
-            
-            # Listen and transcribe (blocking until silence)
-            logger.info("Listening for speech...")
-
-            transcribed_text, confidence_info = transcriber.transcribe(audio_recorder)
-            
-            # Log transcription result
-            logger.info(f"Transcribed: text='{transcribed_text}', confidence_info={confidence_info}")
-            
-            # Continue if no speech detected with at least one letter
-            if not transcribed_text or not any(c.isalnum() for c in transcribed_text):
-                continue
-
-            # Did we even hear speech?
-            if confidence_info.get("no_speech_prob", 0) > 0.5:
-                wav_player.play_transcribed_sound(audio_player)
-                tts_synthesizer.synthesize_and_play("Pardon?", audio_player)
-                continue
-
-            # Are we confident about the transcription?
-            if confidence_info.get("score", 0) < 0.5 and confidence_info.get("logprob_score", 0) < 0.7:
-                # Output "Pardon?" to let user confirm their request
-                wav_player.play_transcribed_sound(audio_player)
-                tts_synthesizer.synthesize_and_play("Could you please repeat?", audio_player)
-                continue
-
-            # Play transcription completion sound
-            wav_player.play_prompting_sound(audio_player)
-            
-            # Send prompt to LLM
-            logger.info(f"LLM interaction - Sending prompt: '{transcribed_text}'")
-            chat_response = llm_chat.prompt(transcribed_text)
-
-            # Log LLM interaction - response received
-            if chat_response:
-                logger.info("LLM interaction - Response stream started")
-            else:
-                logger.warning("LLM interaction - No response received")
-                continue
-
-            # Process and play response stream sentence by sentence
-            if chat_response:
-                buffer = ""
-                offset = 0
-
-                for fragment in chat_response:
-                    if fragment:
-                        # Add the new fragment to the buffer
-                        buffer += fragment
-                        
-                        # Process sentences one by one from the buffer
-                        while True:
-                            # Check if there are complete sentences (ending with ".", "!", "?") 
-                            # or lines (ending with "\n") after the offset
-                            first_sentence_end_idx = find_first_sentence_ending(buffer, offset)
-                            
-                            # If we found a sentence/line ending, extract and play it
-                            if first_sentence_end_idx >= offset:
-                                # Extract sentence/line from offset to first_sentence_end_idx (inclusive)
-                                sentence = buffer[offset:first_sentence_end_idx + 1]
-                                
-                                # Synthesize and play (blocking until playback completes)
-                                tts_synthesizer.synthesize_and_play(sentence, audio_player)
-                                
-                                # Update offset to after the first sentence/line ending
-                                offset = first_sentence_end_idx + 1
-                            else:
-                                # No more complete sentences in buffer, break inner loop to get more fragments
-                                break
-                
-                # Send any remaining text in the buffer (if response ended without sentence ending)
-                if offset < len(buffer):
-                    remaining = buffer[offset:]
-                    if remaining.strip():  # Only send if there's non-whitespace content
-                        tts_synthesizer.synthesize_and_play(remaining, audio_player)
-                
-                # Log completion of LLM response
-                logger.info("LLM interaction - Response stream completed")
+    # Create microphone processor
+    event_queue = queue.Queue()
+    mic_processor = MicProcessor(
+        mic_frame_queue=full_duplex_io.mic_frame_queue,
+        event_queue=event_queue,
+        speaker_ref_getter=lambda: full_duplex_io.get_speaker_reference(delay_frames=0),
+        enable_aec=True,  # AEC will be disabled automatically if aec_audio_processing not available
+        barge_in_threshold_ms=300,
+        speech_end_silence_ms=1500  # 1.5 seconds to match user expectation
+    )
+    
+    # Create STT transcriber
+    transcriber = SttTranscriber(silence_duration_sec=1.5)
+    
+    # Create TTS synthesizer
+    tts_synthesizer = TtsSynthesizer()
+    
+    # Create LLM client
+    llm_client = LlmClient()
+    llm_chat = llm_client.new_chat()
+    
+    # Create orchestrator
+    orchestrator = Orchestrator(
+        mic_processor=mic_processor,
+        transcriber=transcriber,
+        llm_chat=llm_chat,
+        tts_synthesizer=tts_synthesizer,
+        audio_player=audio_player,
+        full_duplex_io=full_duplex_io,
+        min_confidence_score=0.5,
+        min_logprob_score=0.7
+    )
+    
+    # Set event queue on orchestrator
+    orchestrator.event_queue = event_queue
+    
+    try:
+        # Start full-duplex audio stream
+        logger.info("Starting full-duplex audio stream...")
+        full_duplex_io.start()
         
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}", exc_info=True)
-
-try:
-    logger.info("Starting pipeline...")
-    logger.info("Listening ...")
+        # Start microphone processor
+        logger.info("Starting microphone processor...")
+        mic_processor.start(orchestrator_state_getter=orchestrator.get_state)
+        
+        # Run orchestrator (blocks)
+        logger.info("Starting orchestrator...")
+        orchestrator.run()
     
-    # Start audio recorder (needed for direct recording)
-    audio_recorder.start()
-    
-    # Run main loop
-    main_loop()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error(f"Error in main: {e}", exc_info=True)
+    finally:
+        # Cleanup
+        logger.info("Cleaning up...")
+        mic_processor.shutdown()
+        full_duplex_io.shutdown()
+        logger.info("Shutdown complete")
 
-except KeyboardInterrupt:
-    logger.info("Exiting...")
-    audio_recorder.shutdown()
+
+if __name__ == "__main__":
+    main()

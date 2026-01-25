@@ -31,3 +31,9 @@ tokenizers>=0.13.0
 
 # visualizations
 matplotlib
+
+# VAD for speech detection
+webrtcvad
+
+# AEC (Acoustic Echo Cancellation)
+aec-audio-processing

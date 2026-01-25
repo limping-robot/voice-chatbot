@@ -1,11 +1,19 @@
 import time
 import threading
 import queue
-from typing import Optional
+from typing import Optional, Iterator
 from os.path import dirname, join
 from piper import PiperVoice, SynthesisConfig
 
 import numpy as np
+from audio.types import AudioFrame
+from audio.aec import SAMPLE_RATE, AEC_SAMPLES_PER_FRAME
+
+try:
+    from scipy import signal
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 
 class TtsSynthesizer:
@@ -55,6 +63,71 @@ class TtsSynthesizer:
             audio_data = np.array(chunk.audio_int16_array, dtype=np.int16)
             # Play audio (blocks until playback completes)
             audio_player.play_audio(audio_data, chunk.sample_rate)
+    
+    def synthesize_stream(self, text: str) -> Iterator[AudioFrame]:
+        """
+        Synthesize text to speech and yield audio frames (non-blocking, no playback).
+        
+        Splits chunks into 10ms frames (160 samples at 16kHz) and resamples if needed.
+        
+        Args:
+            text: Text to synthesize
+        
+        Yields:
+            AudioFrame objects with sample_rate=16000 and frame_size=160
+        """
+        text = text.strip()
+        if not text:
+            return
+        
+        target_sample_rate = SAMPLE_RATE  # 16kHz
+        frame_size = AEC_SAMPLES_PER_FRAME  # 160 samples (10ms at 16kHz)
+        
+        # Synthesize text into audio chunks
+        chunks = self.voice.synthesize(text, self.syn_config)
+        timestamp = time.time()
+        
+        for chunk in chunks:
+            # Convert int16 array to numpy array
+            audio_data = np.array(chunk.audio_int16_array, dtype=np.int16)
+            source_sample_rate = chunk.sample_rate
+            
+            # Resample to target sample rate (16kHz) if needed
+            if source_sample_rate != target_sample_rate:
+                if HAS_SCIPY:
+                    # Calculate number of samples after resampling
+                    num_samples = int(len(audio_data) * target_sample_rate / source_sample_rate)
+                    # Resample using scipy
+                    audio_data_float = audio_data.astype(np.float32) / 32768.0
+                    audio_data_resampled = signal.resample(audio_data_float, num_samples)
+                    # Convert back to int16
+                    audio_data = np.clip(audio_data_resampled * 32767.0, -32768, 32767).astype(np.int16)
+                else:
+                    # Simple linear interpolation fallback (not ideal but better than nothing)
+                    indices = np.linspace(0, len(audio_data) - 1, int(len(audio_data) * target_sample_rate / source_sample_rate))
+                    audio_data_float = audio_data.astype(np.float32)
+                    audio_data = np.interp(indices, np.arange(len(audio_data)), audio_data_float).astype(np.int16)
+            
+            # Split into 10ms frames (160 samples at 16kHz)
+            for i in range(0, len(audio_data), frame_size):
+                frame_data = audio_data[i:i + frame_size]
+                if len(frame_data) == frame_size:
+                    yield AudioFrame(
+                        pcm=frame_data.copy(),
+                        sample_rate=target_sample_rate,
+                        timestamp=timestamp + (i / target_sample_rate)
+                    )
+                elif len(frame_data) > 0:
+                    # Pad last frame if needed
+                    padded = np.pad(frame_data, (0, frame_size - len(frame_data)), mode='constant')
+                    yield AudioFrame(
+                        pcm=padded,
+                        sample_rate=target_sample_rate,
+                        timestamp=timestamp + (i / target_sample_rate)
+                    )
+            
+            # Update timestamp for next chunk
+            timestamp += len(audio_data) / target_sample_rate
 
     def start(self):
         """Start synthesizing in a background thread."""

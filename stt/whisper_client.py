@@ -88,6 +88,88 @@ class SttTranscriber:
         transcribed_text = transcribed_text.strip()
         
         return transcribed_text, confidence_info
+    
+    def transcribe_frames(self, frames: list[np.ndarray], sample_rate: int = 16000) -> tuple[str, dict]:
+        """
+        Transcribe audio from a list of frames (non-blocking, no recording).
+        
+        Args:
+            frames: List of audio frames (np.ndarray, float32 or int16)
+            sample_rate: Sample rate of the audio
+        
+        Returns:
+            Tuple of (transcribed_text: str, confidence_info: dict)
+        """
+        if not frames:
+            return "", {"score": 0.0, "reason": "no_audio"}
+        
+        # Concatenate frames
+        audio_data = np.concatenate(frames)
+        
+        # Ensure float32
+        if audio_data.dtype != np.float32:
+            if audio_data.dtype == np.int16:
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            else:
+                audio_data = audio_data.astype(np.float32)
+        
+        # Transcribe using faster-whisper
+        segments, _ = self.asr.transcribe(
+            audio_data,
+            language="en",
+            beam_size=5
+        )
+        
+        segments = list(segments)
+        if not segments:
+            return "", {"score": 0.0, "reason": "no_segments"}
+        
+        transcribed_text = ""
+        for segment in segments:
+            transcribed_text += segment.text
+        
+        confidence_info = self._utterance_confidence(segments)
+        transcribed_text = transcribed_text.strip()
+        
+        return transcribed_text, confidence_info
+    
+    def transcribe_pcm(self, pcm: np.ndarray, sample_rate: int = 16000) -> tuple[str, dict]:
+        """
+        Transcribe audio from PCM array (non-blocking, no recording).
+        
+        Args:
+            pcm: Audio data as np.ndarray (float32 or int16)
+            sample_rate: Sample rate of the audio
+        
+        Returns:
+            Tuple of (transcribed_text: str, confidence_info: dict)
+        """
+        # Ensure float32
+        if pcm.dtype != np.float32:
+            if pcm.dtype == np.int16:
+                pcm = pcm.astype(np.float32) / 32768.0
+            else:
+                pcm = pcm.astype(np.float32)
+        
+        # Transcribe using faster-whisper
+        segments, _ = self.asr.transcribe(
+            pcm,
+            language="en",
+            beam_size=5
+        )
+        
+        segments = list(segments)
+        if not segments:
+            return "", {"score": 0.0, "reason": "no_segments"}
+        
+        transcribed_text = ""
+        for segment in segments:
+            transcribed_text += segment.text
+        
+        confidence_info = self._utterance_confidence(segments)
+        transcribed_text = transcribed_text.strip()
+        
+        return transcribed_text, confidence_info
 
     def _clamp(self, x: float, lo: float = 0.0, hi: float = 1.0) -> float:
         return max(lo, min(hi, x))
