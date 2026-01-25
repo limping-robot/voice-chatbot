@@ -51,6 +51,52 @@ def find_first_sentence_ending(buffer: str, offset: int) -> int:
     
     return -1
 
+
+def process_llm_response_sentences(chat_response):
+    """
+    Generator that processes LLM response stream and yields complete sentences.
+    
+    Buffers fragments from the response stream and extracts complete sentences
+    (ending with ".", "!", "?", or "\n") as they become available.
+    
+    Args:
+        chat_response: Iterator of text fragments from LLM
+    
+    Yields:
+        Complete sentences as strings (including the ending punctuation)
+    """
+    buffer = ""
+    offset = 0
+    
+    for fragment in chat_response:
+        if fragment:
+            # Add the new fragment to the buffer
+            buffer += fragment
+            
+            # Process sentences one by one from the buffer
+            while True:
+                # Check if there are complete sentences (ending with ".", "!", "?") 
+                # or lines (ending with "\n") after the offset
+                first_sentence_end_idx = find_first_sentence_ending(buffer, offset)
+                
+                # If we found a sentence/line ending, extract and yield it
+                if first_sentence_end_idx >= offset:
+                    # Extract sentence/line from offset to first_sentence_end_idx (inclusive)
+                    sentence = buffer[offset:first_sentence_end_idx + 1]
+                    yield sentence
+                    
+                    # Update offset to after the first sentence/line ending
+                    offset = first_sentence_end_idx + 1
+                else:
+                    # No more complete sentences in buffer, break inner loop to get more fragments
+                    break
+    
+    # Send any remaining text in the buffer (if response ended without sentence ending)
+    if offset < len(buffer):
+        remaining = buffer[offset:]
+        if remaining.strip():  # Only yield if there's non-whitespace content
+            yield remaining
+
 def main_loop():
     """Main loop: listen, transcribe, send to LLM, and play response."""
     
@@ -99,43 +145,12 @@ def main_loop():
                 continue
 
             # Process and play response stream sentence by sentence
-            if chat_response:
-                buffer = ""
-                offset = 0
-
-                for fragment in chat_response:
-                    if fragment:
-                        # Add the new fragment to the buffer
-                        buffer += fragment
-                        
-                        # Process sentences one by one from the buffer
-                        while True:
-                            # Check if there are complete sentences (ending with ".", "!", "?") 
-                            # or lines (ending with "\n") after the offset
-                            first_sentence_end_idx = find_first_sentence_ending(buffer, offset)
-                            
-                            # If we found a sentence/line ending, extract and play it
-                            if first_sentence_end_idx >= offset:
-                                # Extract sentence/line from offset to first_sentence_end_idx (inclusive)
-                                sentence = buffer[offset:first_sentence_end_idx + 1]
-                                
-                                # Synthesize and play (blocking until playback completes)
-                                tts_synthesizer.synthesize_and_play(sentence, audio_player)
-                                
-                                # Update offset to after the first sentence/line ending
-                                offset = first_sentence_end_idx + 1
-                            else:
-                                # No more complete sentences in buffer, break inner loop to get more fragments
-                                break
-                
-                # Send any remaining text in the buffer (if response ended without sentence ending)
-                if offset < len(buffer):
-                    remaining = buffer[offset:]
-                    if remaining.strip():  # Only send if there's non-whitespace content
-                        tts_synthesizer.synthesize_and_play(remaining, audio_player)
-                
-                # Log completion of LLM response
-                logger.info("LLM interaction - Response stream completed")
+            for sentence in process_llm_response_sentences(chat_response):
+                # Synthesize and play (blocking until playback completes)
+                tts_synthesizer.synthesize_and_play(sentence, audio_player)
+            
+            # Log completion of LLM response
+            logger.info("LLM interaction - Response stream completed")
         
         except KeyboardInterrupt:
             raise
