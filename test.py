@@ -1,11 +1,11 @@
-from stt.whisper_client import SttClient
-from tts.pipertts_client import TtsClient
+from speech_to_text.whisper_client import SpeechToText
+from text_to_speech.pipertts_client import TextToSpeech
 
-from llm.client import LlmClient
+from language_model.client import LmStudioClient
 
-stt_client = SttClient()
-llm_client = LlmClient()
-tts_client = TtsClient()
+stt_client = SpeechToText()
+llm_client = LmStudioClient()
+tts_client = TextToSpeech()
 
 response = llm_chat = llm_client.prompt(
     [

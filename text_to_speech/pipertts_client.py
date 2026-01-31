@@ -8,7 +8,7 @@ from piper import PiperVoice, SynthesisConfig
 import numpy as np
 
 
-class TtsSynthesizer:
+class TextToSpeech:
     """
     Synthesizes text to speech.
     

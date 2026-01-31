@@ -20,7 +20,7 @@ SILENCE_THRESHOLD = 0.003  # RMS threshold for silence detection
 SILENCE_DURATION_SEC = 1.5  # Pause duration to trigger transcription
 
 
-class SttTranscriber:
+class SpeechToText:
     """
     Transcribes audio to text.
     

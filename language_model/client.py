@@ -4,7 +4,7 @@ MODEL_IDENTIFIER = "qwen3-4b-instruct-2507-gemini-3-pro-preview-distill"
 
 class LlmChat:
     def __init__(self):
-        self.llm_client = LlmClient()
+        self.lm_studio_client = LmStudioClient()
         self.context = [
             { "role": "system", "content": 
                 "You are a helpful assistant. " + 
@@ -19,7 +19,7 @@ class LlmChat:
     def prompt(self, prompt: list[dict[str, str]]) -> ChatCompletion:
         self.context.append({ "role": "user", "content": prompt })
         
-        stream = self.llm_client.prompt(messages=self.context)
+        stream = self.lm_studio_client.prompt(messages=self.context)
 
         fragments: list[str] = []
         
@@ -41,7 +41,7 @@ class LlmChat:
 
         return reply
 
-class LlmClient:
+class LmStudioClient:
     def __init__(self):
         self.client = OpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
 

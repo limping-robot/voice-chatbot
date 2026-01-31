@@ -1,11 +1,11 @@
 import re
 import logging
 import sys
-from stt.whisper_client import SttTranscriber
-from tts.pipertts_client import TtsSynthesizer
+from speech_to_text.whisper_client import SpeechToText
+from text_to_speech.pipertts_client import TextToSpeech
 from audio.audio_recorder import AudioRecorder
 from audio.audio_player import AudioPlayer
-from llm.client import LlmClient
+from language_model.client import LmStudioClient
 
 from audio import wav_player
 
@@ -21,11 +21,11 @@ logger = logging.getLogger(__name__)
 # Create pipeline components
 audio_recorder = AudioRecorder()
 audio_player = AudioPlayer()
-transcriber = SttTranscriber(silence_duration_sec=1.5)
-tts_synthesizer = TtsSynthesizer()
+transcriber = SpeechToText(silence_duration_sec=1.5)
+text_to_speech = TextToSpeech()
 
 # LLM client
-llm_client = LlmClient()
+llm_client = LmStudioClient()
 llm_chat = llm_client.new_chat()
 
 # Precompiled regex pattern for sentence endings
@@ -120,14 +120,14 @@ def main_loop():
             # Did we even hear speech?
             if confidence_info.get("no_speech_prob", 0) > 0.5:
                 wav_player.play_transcribed_sound(audio_player)
-                tts_synthesizer.synthesize_and_play("Pardon?", audio_player)
+                text_to_speech.synthesize_and_play("Pardon?", audio_player)
                 continue
 
             # Are we confident about the transcription?
             if confidence_info.get("score", 0) < 0.5 and confidence_info.get("logprob_score", 0) < 0.7:
                 # Output "Pardon?" to let user confirm their request
                 wav_player.play_transcribed_sound(audio_player)
-                tts_synthesizer.synthesize_and_play("Could you please repeat?", audio_player)
+                text_to_speech.synthesize_and_play("Could you please repeat?", audio_player)
                 continue
 
             # Play transcription completion sound
@@ -147,7 +147,7 @@ def main_loop():
             # Process and play response stream sentence by sentence
             for sentence in process_llm_response_sentences(chat_response):
                 # Synthesize and play (blocking until playback completes)
-                tts_synthesizer.synthesize_and_play(sentence, audio_player)
+                text_to_speech.synthesize_and_play(sentence, audio_player)
             
             # Log completion of LLM response
             logger.info("LLM interaction - Response stream completed")
